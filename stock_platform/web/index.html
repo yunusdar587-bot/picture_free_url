@@ -167,10 +167,18 @@
     }
 
     let klineRequestId = 0;
+    let loadedCode = null;
 
     async function loadKline() {
       const code = codeInput.value.trim();
       if (!code) return;
+
+      // 换股票时清掉日期框：上一只的区间未必落在这一只的数据范围内，
+      // 沿用会直接查不到数据。
+      if (loadedCode !== null && code !== loadedCode) {
+        startInput.value = "";
+        endInput.value = "";
+      }
 
       const requestId = ++klineRequestId;
       setStatus(`加载中: ${code} ...`);
@@ -186,6 +194,7 @@
         volumeSeries.setData(data.volumes);
         chart.timeScale().fitContent();
 
+        loadedCode = code;
         startInput.value = data.start;
         endInput.value = data.end;
 
@@ -266,7 +275,12 @@
         loadKline();
       }
     });
-    rangeSelect.addEventListener("change", loadKline);
+    rangeSelect.addEventListener("change", () => {
+      // 上一次加载会把区间回填到日期框，不清掉的话选“全部”仍会沿用那个窄区间
+      startInput.value = "";
+      endInput.value = "";
+      loadKline();
+    });
     document.addEventListener("click", (e) => {
       if (!suggestionsEl.contains(e.target) && e.target !== codeInput) {
         suggestionsEl.style.display = "none";
