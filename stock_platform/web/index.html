@@ -82,6 +82,7 @@
       <option value="5">近 5 年</option>
     </select>
     <button id="load-btn">加载</button>
+    <button id="reset-btn" title="恢复纵向自适应并铺满时间轴">重置视图</button>
     <div id="suggestions" class="suggestions"></div>
   </div>
 
@@ -99,10 +100,19 @@
 
     const MAX_SUGGESTIONS = 50;
 
+    const CANDLE_PANE = 0;
+    const VOLUME_PANE = 1;
+
     const chart = LightweightCharts.createChart(chartContainer, {
       layout: {
         background: { color: "#131722" },
         textColor: "#d1d4dc",
+        // 两块画板之间的分隔条，可以拖动改变上下高度
+        panes: {
+          separatorColor: "#363a45",
+          separatorHoverColor: "#4a4f5c",
+          enableResize: true,
+        },
       },
       grid: {
         vertLines: { color: "#2a2e39" },
@@ -111,24 +121,34 @@
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
       rightPriceScale: { borderColor: "#2a2e39" },
       timeScale: { borderColor: "#2a2e39" },
+      // 在右侧价格轴上按住拖动即可拉伸纵向刻度，双击还原
+      handleScale: {
+        axisPressedMouseMove: { price: true, time: true },
+        axisDoubleClickReset: { price: true, time: true },
+        mouseWheel: true,
+        pinch: true,
+      },
     });
 
-    // Lightweight Charts v5: addCandlestickSeries 已移除，改用 addSeries
+    // Lightweight Charts v5: addCandlestickSeries 已移除，改用 addSeries。
+    // 第三个参数是画板序号：K 线和成交量各占一块，不再相互重叠。
     const candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
       upColor: "#ef5350",
       downColor: "#26a69a",
       borderVisible: false,
       wickUpColor: "#ef5350",
       wickDownColor: "#26a69a",
-    });
+    }, CANDLE_PANE);
 
     const volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
       priceFormat: { type: "volume" },
-      priceScaleId: "",
-    });
-    volumeSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.8, bottom: 0 },
-    });
+    }, VOLUME_PANE);
+
+    // 用伸缩比而不是固定像素，窗口大小变化时两块画板按比例分配
+    chart.panes()[CANDLE_PANE].setStretchFactor(3);
+    chart.panes()[VOLUME_PANE].setStretchFactor(1);
+
+    const paneSeries = { [CANDLE_PANE]: candleSeries, [VOLUME_PANE]: volumeSeries };
 
     function resizeChart() {
       chart.applyOptions({
@@ -137,6 +157,75 @@
       });
     }
     window.addEventListener("resize", resizeChart);
+
+    function autoScaleAll(on) {
+      for (const series of Object.values(paneSeries)) {
+        series.priceScale().setAutoScale(on);
+      }
+    }
+
+    const SEPARATOR_HEIGHT = 1;
+
+    /** 鼠标落在哪块画板上；落在价格轴、时间轴或分隔条上时返回 null。 */
+    function paneAt(event) {
+      if (event.target.tagName !== "CANVAS") return null;  // 分隔条不是 canvas
+      const rect = chartContainer.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+
+      // 右侧价格轴留给库自己处理拉伸，不要拦截
+      const axisWidth = candleSeries.priceScale().width();
+      if (x > rect.width - axisWidth) return null;
+
+      let top = 0;
+      for (const pane of chart.panes()) {
+        const height = pane.getHeight();
+        if (y >= top && y < top + height) return pane.paneIndex();
+        top += height + SEPARATOR_HEIGHT;
+      }
+      return null;  // 底部时间轴
+    }
+
+    // 纵向拖动：库本身只处理横向时间平移，纵向平移要自己接管。
+    // 两者共存，于是按住拖动可以同时左右移动时间、上下移动价格。
+    let vertDrag = null;
+
+    chartContainer.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      const paneIndex = paneAt(e);
+      if (paneIndex === null) return;
+      const series = paneSeries[paneIndex];
+      if (!series) return;
+      vertDrag = { y: e.clientY, series, moved: false };
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!vertDrag) return;
+      const dy = e.clientY - vertDrag.y;
+      if (dy === 0) return;
+
+      const scale = vertDrag.series.priceScale();
+      if (!vertDrag.moved) {
+        // 一旦手动平移就关掉自动缩放，否则每帧都会被拉回数据范围
+        scale.setAutoScale(false);
+        vertDrag.moved = true;
+      }
+      const range = scale.getVisibleRange();
+      if (!range) return;
+
+      // 用同一根轴上相邻两点的价格差换算“每像素多少价格”，
+      // 这样对任意刻度和边距都成立
+      const perPixel = vertDrag.series.coordinateToPrice(0) - vertDrag.series.coordinateToPrice(1);
+      if (!isFinite(perPixel)) return;
+
+      const shift = dy * perPixel;
+      scale.setVisibleRange({ from: range.from + shift, to: range.to + shift });
+      vertDrag.y = e.clientY;
+    });
+
+    window.addEventListener("mouseup", () => {
+      vertDrag = null;
+    });
 
     function setStatus(text, kind = "") {
       statusEl.textContent = text;
@@ -192,6 +281,8 @@
 
         candleSeries.setData(data.bars);
         volumeSeries.setData(data.volumes);
+        // 换了数据就恢复纵向自适应，否则会沿用上一只股票的价格区间
+        autoScaleAll(true);
         chart.timeScale().fitContent();
 
         loadedCode = code;
@@ -268,6 +359,10 @@
     const debouncedSearch = debounce(searchCodes, 250);
 
     document.getElementById("load-btn").addEventListener("click", loadKline);
+    document.getElementById("reset-btn").addEventListener("click", () => {
+      autoScaleAll(true);
+      chart.timeScale().fitContent();
+    });
     codeInput.addEventListener("input", (e) => debouncedSearch(e.target.value.trim()));
     codeInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
