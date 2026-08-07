@@ -1,122 +1,115 @@
-"""第四步（可选）：导入某一年的全部日 K 数据。"""
+"""第四步：导入某一年（或若干年）的全部日 K 数据。
 
-import shutil
+用法:
+    python 04_import_year.py 2018
+    python 04_import_year.py 2000 2001 2002
+    python 04_import_year.py --range 2000 2024
+    python 04_import_year.py --all
+"""
+
+import argparse
+import tempfile
 import zipfile
 from pathlib import Path
 
 import duckdb
 
-from config import DAILY_ZIP_DIR, DB_PATH
-
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS daily_bars (
-    code           VARCHAR,
-    trade_date     DATE,
-    open           DOUBLE,
-    high           DOUBLE,
-    low            DOUBLE,
-    close          DOUBLE,
-    pre_close      DOUBLE,
-    change         DOUBLE,
-    pct_chg        DOUBLE,
-    volume         DOUBLE,
-    amount         DOUBLE,
-    turnover       DOUBLE,
-    turnover_free  DOUBLE,
-    volume_ratio   DOUBLE,
-    pe             DOUBLE,
-    pe_ttm         DOUBLE,
-    pb             DOUBLE,
-    ps             DOUBLE,
-    ps_ttm         DOUBLE,
-    dv_yield       DOUBLE,
-    dv_ttm         DOUBLE,
-    total_share    DOUBLE,
-    float_share    DOUBLE,
-    free_share     DOUBLE,
-    total_mv       DOUBLE,
-    circ_mv        DOUBLE
-)
-"""
-
-INSERT_SQL = """
-INSERT INTO daily_bars
-SELECT
-    code,
-    CAST(datetime AS DATE) AS trade_date,
-    open, high, low, close, pre_close,
-    change, pct_chg, volume, amount,
-    turnover, turnover_free, volume_ratio,
-    pe, pe_ttm, pb, ps, ps_ttm,
-    dv_yield, dv_ttm,
-    total_share, float_share, free_share,
-    total_mv, circ_mv
-FROM read_csv_auto(?, header=true)
-"""
+from config import DAILY_ZIP_DIR, DB_PATH, TEST_YEAR
+from schema import CREATE_TABLE_SQL, INSERT_SQL, valid_csv_names
 
 
-def valid_csv_names(members: list[str]) -> list[str]:
-    return [
-        name
-        for name in members
-        if name.lower().endswith(".csv")
-        and not name.startswith("__MACOSX")
-        and not Path(name).name.startswith("._")
-    ]
+def available_years() -> list[int]:
+    years = []
+    for path in DAILY_ZIP_DIR.glob("*.zip"):
+        if path.stem.isdigit():
+            years.append(int(path.stem))
+    return sorted(years)
 
 
-def import_year(year: int) -> None:
+def import_year(year: int) -> int:
+    """把某一年的数据导入库中，返回该年的行数。"""
     zip_path = DAILY_ZIP_DIR / f"{year}.zip"
     if not zip_path.exists():
         raise FileNotFoundError(f"找不到压缩包: {zip_path}")
 
-    temp_dir = Path(__file__).resolve().parent / "_temp_year" / str(year)
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True)
-
-    with zipfile.ZipFile(zip_path) as zf:
-        members = valid_csv_names(zf.namelist())
-        print(f"{year}.zip 内有效 CSV: {len(members)} 个")
-
-        for member in members:
-            out_path = temp_dir / Path(member).name
-            with zf.open(member) as src, out_path.open("wb") as dst:
-                dst.write(src.read())
-
     con = duckdb.connect(str(DB_PATH))
-    con.execute(CREATE_TABLE_SQL)
+    try:
+        con.execute(CREATE_TABLE_SQL)
 
-    # 重复导入前先删掉该年旧数据，避免翻倍
-    con.execute(
-        """
-        DELETE FROM daily_bars
-        WHERE trade_date >= ? AND trade_date < ?
-        """,
-        [f"{year}-01-01", f"{year + 1}-01-01"],
-    )
+        # 整年放在一个事务里：中途失败会整体回滚，
+        # 不会出现“旧数据已删、新数据只导了一半”的情况。
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute(
+                "DELETE FROM daily_bars WHERE trade_date >= ? AND trade_date < ?",
+                [f"{year}-01-01", f"{year + 1}-01-01"],
+            )
 
-    csv_files = sorted(temp_dir.glob("*.csv"))
-    for i, csv_path in enumerate(csv_files, start=1):
-        con.execute(INSERT_SQL, [str(csv_path)])
-        if i % 200 == 0 or i == len(csv_files):
-            print(f"  已导入 {i}/{len(csv_files)}")
+            with zipfile.ZipFile(zip_path) as zf:
+                members = valid_csv_names(zf.namelist())
+                print(f"{year}.zip 内有效 CSV: {len(members)} 个")
 
-    count = con.execute(
-        """
-        SELECT COUNT(*)
-        FROM daily_bars
-        WHERE trade_date >= ? AND trade_date < ?
-        """,
-        [f"{year}-01-01", f"{year + 1}-01-01"],
-    ).fetchone()[0]
+                # 一次只解压一个文件，避免整年 CSV 同时占满磁盘
+                with tempfile.TemporaryDirectory(prefix=f"stock_{year}_") as tmp:
+                    tmp_dir = Path(tmp)
+                    for i, member in enumerate(members, start=1):
+                        csv_path = tmp_dir / Path(member).name
+                        with zf.open(member) as src, csv_path.open("wb") as dst:
+                            dst.write(src.read())
+                        try:
+                            con.execute(INSERT_SQL, [str(csv_path)])
+                        finally:
+                            csv_path.unlink(missing_ok=True)
+                        if i % 200 == 0 or i == len(members):
+                            print(f"  已导入 {i}/{len(members)}")
+
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            print(f"{year} 年导入失败，已回滚，库内数据保持原样")
+            raise
+
+        count = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM daily_bars
+            WHERE trade_date >= ? AND trade_date < ?
+            """,
+            [f"{year}-01-01", f"{year + 1}-01-01"],
+        ).fetchone()[0]
+    finally:
+        con.close()
 
     print(f"{year} 年导入完成，共 {count} 条")
-    con.close()
+    return count
 
-    shutil.rmtree(temp_dir)
+
+def parse_args() -> list[int]:
+    parser = argparse.ArgumentParser(description="导入日 K 数据")
+    parser.add_argument("years", nargs="*", type=int, help="要导入的年份")
+    parser.add_argument(
+        "--range", nargs=2, type=int, metavar=("START", "END"), help="导入连续年份区间"
+    )
+    parser.add_argument(
+        "--all", action="store_true", help=f"导入 {DAILY_ZIP_DIR} 下所有年份"
+    )
+    args = parser.parse_args()
+
+    if args.all:
+        years = available_years()
+        if not years:
+            parser.error(f"{DAILY_ZIP_DIR} 下没有找到形如 2000.zip 的文件")
+        return years
+    if args.range:
+        return list(range(args.range[0], args.range[1] + 1))
+    if args.years:
+        return args.years
+    print(f"未指定年份，默认导入 config.TEST_YEAR = {TEST_YEAR}")
+    return [TEST_YEAR]
 
 
 if __name__ == "__main__":
-
-    import_year(2018)
+    total = 0
+    for y in parse_args():
+        total += import_year(y)
+    print(f"\n合计 {total} 条")
