@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# DuckDB 数据库与导入过程中的临时文件（体积大，不入库）
+*.duckdb
+*.duckdb.wal
+stock_platform/_temp_csv/
+stock_platform/_temp_year/

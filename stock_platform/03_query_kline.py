@@ -1,27 +1,45 @@
-"""第三步：查询日 K 线，确认读取正常。"""
+"""第三步：查询日 K 线，确认读取正常。
 
-import duckdb
+用法:
+    python 03_query_kline.py
+    python 03_query_kline.py 000001.SZ 2000-04-01 2000-04-30
+"""
 
-from config import DB_PATH
+import sys
+
+from config import TEST_STOCK
+from db import DatabaseUnavailable, connection
 
 
-def get_daily_kline(code: str, start: str, end: str):
-    con = duckdb.connect(str(DB_PATH), read_only=True)
-    df = con.execute(
-        """
+def get_daily_kline(code: str, start: str | None = None, end: str | None = None):
+    sql = """
         SELECT trade_date, open, high, low, close, volume, pct_chg
         FROM daily_bars
         WHERE code = ?
-          AND trade_date BETWEEN ? AND ?
+          {date_filter}
         ORDER BY trade_date
-        """,
-        [code, start, end],
-    ).fetchdf()
-    con.close()
-    return df
+    """
+    params: list = [code]
+    if start and end:
+        sql = sql.format(date_filter="AND trade_date BETWEEN ? AND ?")
+        params += [start, end]
+    else:
+        sql = sql.format(date_filter="")
+
+    with connection(read_only=True) as con:
+        return con.execute(sql, params).fetchdf()
 
 
 if __name__ == "__main__":
-    df = get_daily_kline("000001.SZ", "2000-04-01", "2000-04-30")
-    print(f"共 {len(df)} 条")
-    print(df.to_string(index=False))
+    args = sys.argv[1:]
+    code = args[0] if args else TEST_STOCK
+    start = args[1] if len(args) > 1 else None
+    end = args[2] if len(args) > 2 else None
+
+    try:
+        df = get_daily_kline(code, start, end)
+    except DatabaseUnavailable as exc:
+        sys.exit(str(exc))
+
+    print(f"{code} 共 {len(df)} 条")
+    print(df.head(20).to_string(index=False))
