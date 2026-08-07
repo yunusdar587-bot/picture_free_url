@@ -23,6 +23,7 @@
       background: #1e222d;
       border-bottom: 1px solid #2a2e39;
       flex-wrap: wrap;
+      position: relative;
     }
     input, button, select {
       background: #2a2e39;
@@ -46,15 +47,17 @@
       background: #1e222d;
       border-top: 1px solid #2a2e39;
     }
+    #status.error { color: #ef5350; }
+    #status.warn { color: #f0b90b; }
     .suggestions {
       position: absolute;
-      top: 56px;
+      top: 100%;
       left: 16px;
       z-index: 10;
       background: #2a2e39;
       border: 1px solid #363a45;
       border-radius: 4px;
-      min-width: 260px;
+      min-width: 280px;
       max-height: 240px;
       overflow: auto;
       display: none;
@@ -62,27 +65,28 @@
     .suggestions div {
       padding: 8px 12px;
       cursor: pointer;
+      white-space: nowrap;
     }
     .suggestions div:hover { background: #363a45; }
   </style>
 </head>
 <body>
   <div class="toolbar">
-    <input id="code-input" type="text" placeholder="输入代码，如 000001.SZ" value="000001.SZ" />
+    <input id="code-input" type="text" placeholder="输入代码，如 000001.SZ" value="000001.SZ" autocomplete="off" />
     <input id="start-input" type="date" />
     <input id="end-input" type="date" />
     <select id="range-select">
       <option value="">全部</option>
-      <option value="1y">近 1 年</option>
-      <option value="3y">近 3 年</option>
-      <option value="5y">近 5 年</option>
+      <option value="1">近 1 年</option>
+      <option value="3">近 3 年</option>
+      <option value="5">近 5 年</option>
     </select>
     <button id="load-btn">加载</button>
+    <div id="suggestions" class="suggestions"></div>
   </div>
 
   <div id="chart-container"></div>
   <div id="status">就绪</div>
-  <div id="suggestions" class="suggestions"></div>
 
   <script>
     const chartContainer = document.getElementById("chart-container");
@@ -92,6 +96,8 @@
     const endInput = document.getElementById("end-input");
     const rangeSelect = document.getElementById("range-select");
     const suggestionsEl = document.getElementById("suggestions");
+
+    const MAX_SUGGESTIONS = 50;
 
     const chart = LightweightCharts.createChart(chartContainer, {
       layout: {
@@ -124,101 +130,150 @@
       scaleMargins: { top: 0.8, bottom: 0 },
     });
 
-    window.addEventListener("resize", () => {
+    function resizeChart() {
       chart.applyOptions({
         width: chartContainer.clientWidth,
         height: chartContainer.clientHeight,
       });
-    });
+    }
+    window.addEventListener("resize", resizeChart);
 
-    function setStatus(text) {
+    function setStatus(text, kind = "") {
       statusEl.textContent = text;
+      statusEl.className = kind;
     }
 
-    function calcDateRange() {
-      const preset = rangeSelect.value;
-      const end = endInput.value || new Date().toISOString().slice(0, 10);
-      if (!preset) {
-        return {
-          start: startInput.value || undefined,
-          end: endInput.value || undefined,
-        };
+    async function readError(resp) {
+      try {
+        const body = await resp.json();
+        return body.detail || `HTTP ${resp.status}`;
+      } catch {
+        return `HTTP ${resp.status}`;
       }
-      const endDate = new Date(end);
-      const startDate = new Date(endDate);
-      if (preset === "1y") startDate.setFullYear(endDate.getFullYear() - 1);
-      if (preset === "3y") startDate.setFullYear(endDate.getFullYear() - 3);
-      if (preset === "5y") startDate.setFullYear(endDate.getFullYear() - 5);
-      return {
-        start: startDate.toISOString().slice(0, 10),
-        end: end,
-      };
     }
+
+    // 预设区间交给后端按该股票最后交易日计算。
+    // 若在前端用“今天”做基准，历史数据库永远查不到数据。
+    function buildParams(code) {
+      const params = new URLSearchParams({ code });
+      const years = rangeSelect.value;
+      if (years) {
+        params.set("years", years);
+      } else {
+        if (startInput.value) params.set("start", startInput.value);
+        if (endInput.value) params.set("end", endInput.value);
+      }
+      return params;
+    }
+
+    let klineRequestId = 0;
 
     async function loadKline() {
       const code = codeInput.value.trim();
       if (!code) return;
 
-      const { start, end } = calcDateRange();
-      const params = new URLSearchParams({ code });
-      if (start) params.set("start", start);
-      if (end) params.set("end", end);
-
+      const requestId = ++klineRequestId;
       setStatus(`加载中: ${code} ...`);
       try {
-        const resp = await fetch(`/api/kline?${params}`);
-        if (!resp.ok) {
-          const err = await resp.json();
-          throw new Error(err.detail || "加载失败");
-        }
+        const resp = await fetch(`/api/kline?${buildParams(code)}`);
+        if (requestId !== klineRequestId) return;  // 已有更新的请求，丢弃这次结果
+        if (!resp.ok) throw new Error(await readError(resp));
+
         const data = await resp.json();
+        if (requestId !== klineRequestId) return;
+
         candleSeries.setData(data.bars);
         volumeSeries.setData(data.volumes);
         chart.timeScale().fitContent();
-        setStatus(`${data.code} | ${data.start} ~ ${data.end} | ${data.count} 根 K 线`);
+
+        startInput.value = data.start;
+        endInput.value = data.end;
+
+        const notes = [];
+        if (data.truncated) notes.push(`数据过多已截断，仅显示最近 ${data.count} 根`);
+        if (data.skipped) notes.push(`跳过 ${data.skipped} 个无行情的交易日`);
+        const range = `${data.code} | ${data.start} ~ ${data.end} | ${data.count} 根 K 线`;
+        const available = `（可用区间 ${data.first_available} ~ ${data.last_available}）`;
+        setStatus(
+          notes.length ? `${range} ${available} — ${notes.join("；")}` : `${range} ${available}`,
+          notes.length ? "warn" : ""
+        );
       } catch (err) {
-        setStatus(`错误: ${err.message}`);
+        if (requestId !== klineRequestId) return;
+        setStatus(`错误: ${err.message}`, "error");
       }
     }
+
+    function renderSuggestions(items) {
+      suggestionsEl.textContent = "";
+      if (!items.length) {
+        suggestionsEl.style.display = "none";
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement("div");
+        // 用 textContent 而不是拼 HTML，代码里的特殊字符不会破坏结构
+        row.textContent = `${item.code}  (${item.first_date} ~ ${item.last_date}, ${item.bar_count} 根)`;
+        row.addEventListener("click", () => {
+          codeInput.value = item.code;
+          suggestionsEl.style.display = "none";
+          loadKline();
+        });
+        suggestionsEl.appendChild(row);
+      }
+      suggestionsEl.style.display = "block";
+    }
+
+    let searchRequestId = 0;
 
     async function searchCodes(keyword) {
       if (!keyword) {
         suggestionsEl.style.display = "none";
         return;
       }
-      const resp = await fetch(`/api/instruments?q=${encodeURIComponent(keyword)}&limit=10000`);
-      const items = await resp.json();
-      if (!items.length) {
-        suggestionsEl.style.display = "none";
-        return;
+      const requestId = ++searchRequestId;
+      try {
+        const resp = await fetch(
+          `/api/instruments?q=${encodeURIComponent(keyword)}&limit=${MAX_SUGGESTIONS}`
+        );
+        // 先发的请求可能后到，只认最新一次的结果
+        if (requestId !== searchRequestId) return;
+        if (!resp.ok) throw new Error(await readError(resp));
+        const items = await resp.json();
+        if (requestId !== searchRequestId) return;
+        renderSuggestions(items);
+      } catch (err) {
+        if (requestId === searchRequestId) suggestionsEl.style.display = "none";
       }
-      suggestionsEl.innerHTML = items.map(item => `
-        <div data-code="${item.code}">
-          ${item.code} (${item.first_date} ~ ${item.last_date})
-        </div>
-      `).join("");
-      suggestionsEl.style.display = "block";
-      suggestionsEl.querySelectorAll("div").forEach(el => {
-        el.addEventListener("click", () => {
-          codeInput.value = el.dataset.code;
-          suggestionsEl.style.display = "none";
-          loadKline();
-        });
-      });
     }
 
+    function debounce(fn, wait) {
+      let timer;
+      return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), wait);
+      };
+    }
+
+    // 每敲一个字符都查一次会让服务端对全表反复聚合，这里等用户停手再查
+    const debouncedSearch = debounce(searchCodes, 250);
+
     document.getElementById("load-btn").addEventListener("click", loadKline);
-    codeInput.addEventListener("input", (e) => searchCodes(e.target.value.trim()));
+    codeInput.addEventListener("input", (e) => debouncedSearch(e.target.value.trim()));
+    codeInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        suggestionsEl.style.display = "none";
+        loadKline();
+      }
+    });
+    rangeSelect.addEventListener("change", loadKline);
     document.addEventListener("click", (e) => {
       if (!suggestionsEl.contains(e.target) && e.target !== codeInput) {
         suggestionsEl.style.display = "none";
       }
     });
 
-    chart.applyOptions({
-      width: chartContainer.clientWidth,
-      height: chartContainer.clientHeight,
-    });
+    resizeChart();
     loadKline();
   </script>
 </body>
