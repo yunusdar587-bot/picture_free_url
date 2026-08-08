@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>股票 K 线</title>
   <script src="https://unpkg.com/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/drawings.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -35,11 +36,53 @@
     }
     button { cursor: pointer; }
     button:hover { background: #363a45; }
-    #chart-container {
+    .workspace {
       flex: 1;
       min-height: 0;
+      display: flex;
+    }
+    .sidebar {
+      flex: 0 0 46px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 0;
+      background: #1e222d;
+      border-right: 1px solid #2a2e39;
+    }
+    .sidebar button {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid transparent;
+      color: #b2b5be;
+    }
+    .sidebar button:hover:not(:disabled) { background: #2a2e39; color: #d1d4dc; }
+    .sidebar button.active {
+      background: rgba(41, 98, 255, 0.15);
+      border-color: #2962ff;
+      color: #2962ff;
+    }
+    .sidebar button:disabled { opacity: 0.35; cursor: default; }
+    .sidebar .sep {
+      width: 24px;
+      height: 1px;
+      background: #2a2e39;
+      margin: 4px 0;
+    }
+    #chart-container {
+      flex: 1;
+      min-width: 0;
       position: relative;
     }
+    /* 画线时把光标换成十字，指到已有图形上换成移动 */
+    #chart-container.drawing-active canvas { cursor: crosshair !important; }
+    #chart-container.drawing-hit canvas { cursor: move !important; }
     .footer {
       display: flex;
       align-items: center;
@@ -97,7 +140,59 @@
     <div id="suggestions" class="suggestions"></div>
   </div>
 
-  <div id="chart-container"></div>
+  <div class="workspace">
+    <div class="sidebar" id="draw-tools">
+      <button data-tool="cursor" class="active" title="选择 / 移动图形（Esc）">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M6 3l12 8.2-5.1 1-2.4 5.6z" />
+        </svg>
+      </button>
+      <button data-tool="trendline" title="线段：点两下画一条线">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <line x1="5" y1="19" x2="19" y2="5" />
+          <circle cx="5" cy="19" r="2" /><circle cx="19" cy="5" r="2" />
+        </svg>
+      </button>
+      <button data-tool="ray" title="射线：从起点向终点方向无限延伸">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <line x1="4" y1="20" x2="20" y2="4" />
+          <circle cx="4" cy="20" r="2" />
+          <polyline points="13,4 20,4 20,11" />
+        </svg>
+      </button>
+      <button data-tool="rectangle" title="矩形边框（不填充）">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <rect x="4" y="6" width="16" height="12" rx="1" />
+        </svg>
+      </button>
+      <button data-tool="fib" title="斐波那契回撤：先点起点，再点终点">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <line x1="3" y1="5" x2="21" y2="5" /><line x1="3" y1="10" x2="21" y2="10" />
+          <line x1="3" y1="14" x2="21" y2="14" /><line x1="3" y1="19" x2="21" y2="19" />
+          <line x1="6" y1="20" x2="18" y2="4" stroke-dasharray="3 3" />
+        </svg>
+      </button>
+      <div class="sep"></div>
+      <button id="undo-btn" title="撤销（Ctrl+Z）" disabled>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M9 8H15a5 5 0 010 10H8" />
+          <polyline points="12,5 9,8 12,11" />
+        </svg>
+      </button>
+      <button id="redo-btn" title="重做（Ctrl+Y）" disabled>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M15 8H9a5 5 0 000 10h7" />
+          <polyline points="12,5 15,8 12,11" />
+        </svg>
+      </button>
+      <button id="clear-draw-btn" title="清除本股票的全部图形" disabled>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" />
+        </svg>
+      </button>
+    </div>
+    <div id="chart-container"></div>
+  </div>
   <div class="footer">
     <div id="status">就绪</div>
     <!-- 关闭图表内 logo 后，按 Lightweight Charts 许可在此保留署名链接 -->
@@ -209,6 +304,7 @@
 
     chartContainer.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      if (drawTools.getTool() !== "cursor") return;  // 画线时不要顺手把价格轴拖走
       const paneIndex = paneAt(e);
       if (paneIndex === null) return;
       const series = paneSeries[paneIndex];
@@ -243,6 +339,39 @@
     window.addEventListener("mouseup", () => {
       vertDrag = null;
     });
+
+    // 画线工具：图形按“K 线 + 价格”存，所以跟着图表一起缩放平移。
+    const sidebar = document.getElementById("draw-tools");
+    const undoBtn = document.getElementById("undo-btn");
+    const redoBtn = document.getElementById("redo-btn");
+    const clearDrawBtn = document.getElementById("clear-draw-btn");
+    const toolButtons = sidebar.querySelectorAll("button[data-tool]");
+
+    const drawTools = createDrawingTools({
+      chart,
+      series: candleSeries,
+      container: chartContainer,
+      paneIndex: CANDLE_PANE,
+      onChange: (state) => {
+        for (const btn of toolButtons) {
+          btn.classList.toggle("active", btn.dataset.tool === state.tool);
+        }
+        undoBtn.disabled = !state.canUndo;
+        redoBtn.disabled = !state.canRedo;
+        clearDrawBtn.disabled = state.count === 0;
+      },
+    });
+
+    for (const btn of toolButtons) {
+      btn.addEventListener("click", () => {
+        // 再点一次当前工具就退回选择状态
+        const next = btn.classList.contains("active") ? "cursor" : btn.dataset.tool;
+        drawTools.setTool(next);
+      });
+    }
+    undoBtn.addEventListener("click", () => drawTools.undo());
+    redoBtn.addEventListener("click", () => drawTools.redo());
+    clearDrawBtn.addEventListener("click", () => drawTools.clearAll());
 
     function setStatus(text, kind = "") {
       statusEl.textContent = text;
@@ -298,6 +427,9 @@
 
         candleSeries.setData(data.bars);
         volumeSeries.setData(data.volumes);
+        // 图形按股票分开存，换回来还在；端点靠日期定位，换区间也不会跑偏
+        drawTools.setSymbol(data.code);
+        drawTools.setTimes(data.bars.map((bar) => bar.time));
         // 换了数据就恢复纵向自适应，否则会沿用上一只股票的价格区间
         autoScaleAll(true);
         chart.timeScale().fitContent();
