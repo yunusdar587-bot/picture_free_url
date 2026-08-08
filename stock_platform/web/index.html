@@ -40,15 +40,26 @@
       min-height: 0;
       position: relative;
     }
-    #status {
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       padding: 8px 16px;
       font-size: 13px;
       color: #787b86;
       background: #1e222d;
       border-top: 1px solid #2a2e39;
     }
+    #status { flex: 1; min-width: 0; }
     #status.error { color: #ef5350; }
     #status.warn { color: #f0b90b; }
+    .tv-credit {
+      color: #787b86;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .tv-credit:hover { color: #d1d4dc; }
     .suggestions {
       position: absolute;
       top: 100%;
@@ -87,7 +98,11 @@
   </div>
 
   <div id="chart-container"></div>
-  <div id="status">就绪</div>
+  <div class="footer">
+    <div id="status">就绪</div>
+    <!-- 关闭图表内 logo 后，按 Lightweight Charts 许可在此保留署名链接 -->
+    <a class="tv-credit" href="https://www.tradingview.com/" target="_blank" rel="noopener">Charts by TradingView</a>
+  </div>
 
   <script>
     const chartContainer = document.getElementById("chart-container");
@@ -107,6 +122,8 @@
       layout: {
         background: { color: "#131722" },
         textColor: "#d1d4dc",
+        // 关闭图表角落的 TV logo（许可要求另在页面保留 TradingView 链接）
+        attributionLogo: false,
         // 两块画板之间的分隔条，可以拖动改变上下高度
         panes: {
           separatorColor: "#363a45",
