@@ -8,7 +8,7 @@
 (function (global) {
   "use strict";
 
-  const HIT_TOLERANCE = 6;   // 命中判定的像素半径
+  const HIT_TOLERANCE = 8;   // 命中判定的像素半径：线只有一两个像素宽，得留点余量
   const HANDLE_RADIUS = 4;
   const DRAG_THRESHOLD = 4;  // 小于这个位移算“点击”，进入点-点模式
   const MAX_HISTORY = 200;
@@ -370,16 +370,16 @@
     /** 图表自己缩放/平移时不发通知，只能每帧比对一下坐标有没有变。 */
     function signature() {
       const range = chart.timeScale().getVisibleLogicalRange();
-      const top = series.coordinateToPrice(0);
-      const bottom = series.coordinateToPrice(100);
+      const geo = paneGeometry();
       return [
         range ? range.from : "",
         range ? range.to : "",
-        top,
-        bottom,
-        container.clientWidth,
+        series.coordinateToPrice(0),
+        series.coordinateToPrice(100),
+        geo.top,
+        geo.height,
+        geo.width,
         container.clientHeight,
-        paneGeometry().top,
       ].join("|");
     }
 
