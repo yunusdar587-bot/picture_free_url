@@ -41,6 +41,38 @@ python 04_import_year.py --all            # 目录下所有年份
 重复导入同一年不会让数据翻倍（会先删掉该年旧数据再导）。若曾用旧版本导入过
 而出现重复，运行 `python 05_dedupe.py` 清理。
 
+## 从 Baostock 下载日 K
+
+除了导入本地 zip，也可以直接从 [Baostock](http://baostock.com/) 拉数据。默认区间
+2018-05-17 ~ 2026-08-11（即从 2026-08-11 往前数 2000 个交易日），**不复权**。
+
+```bash
+python 06_download_baostock.py                 # 下载，每个交易日一个 .csv.gz
+python 06_download_baostock.py --import-db     # 落盘文件导入 daily_bars
+python 06_download_baostock.py --status        # 看进度，不联网
+```
+
+下载和入库分成两步，因为整个区间要跑十几个小时，不能一直占着 DuckDB 的写锁
+（那会让网页接口一直返回 503）。下载可中断续跑：已下好的日期会跳过，Ctrl-C 之后
+重新运行即可接着下。
+
+| 环境变量 | 含义 | 默认值 |
+| --- | --- | --- |
+| `STOCK_BAOSTOCK_DIR` | 分片落盘目录 | `stock_platform/baostock_daily` |
+| `STOCK_BAOSTOCK_START` | 起始交易日 | `2018-05-17` |
+| `STOCK_BAOSTOCK_END` | 结束交易日 | `2026-08-11` |
+| `STOCK_BAOSTOCK_SOCKET_TIMEOUT` | 单次 recv 超时秒数 | `120` |
+| `STOCK_BAOSTOCK_MAX_RETRY` | 每个日期的重试次数 | `3` |
+
+其他用法：`--limit 5` 只下最近 5 个交易日用来试跑，`--start/--end` 自定义区间，
+`--retry-failed` 重试失败清单里的日期，`--sleep` 调请求间隔（默认 0.5 秒，别设成 0）。
+
+Baostock 的日线只覆盖 `daily_bars` 26 列中的 15 列，余下 11 列会是 NULL：
+`turnover_free`、`volume_ratio`、`pe`、`ps`、`dv_yield`、`dv_ttm`、`total_share`、
+`float_share`、`free_share`、`total_mv`、`circ_mv`。这些列目前没有任何代码读取，
+K 线图和搜索功能只用到 `code` / `trade_date` / OHLC / `volume`，所以不影响使用。
+其中 `free_share` 和 `turnover_free` 需要自由流通股本，Baostock 完全没有这项数据。
+
 ## 启动网页
 
 ```bash

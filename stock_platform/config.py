@@ -19,6 +19,13 @@ DAILY_ZIP_DIR = _path_from_env(
 # DuckDB 数据库文件（运行导入脚本后自动生成）
 DB_PATH = _path_from_env("STOCK_DB_PATH", HERE / "stock.duckdb")
 
+# 06_download_baostock.py 的落盘目录，每个交易日一个 .csv.gz
+BAOSTOCK_DIR = _path_from_env("STOCK_BAOSTOCK_DIR", HERE / "baostock_daily")
+
+# 下载区间：2018-05-17 是 2026-08-11 往前第 2000 个交易日
+BAOSTOCK_START = os.environ.get("STOCK_BAOSTOCK_START", "2018-05-17")
+BAOSTOCK_END = os.environ.get("STOCK_BAOSTOCK_END", "2026-08-11")
+
 # 首次测试：只导入哪一年的 zip
 TEST_YEAR = int(os.environ.get("STOCK_TEST_YEAR", "2000"))
 
