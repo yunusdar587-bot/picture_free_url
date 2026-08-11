@@ -9,3 +9,6 @@ venv/
 *.duckdb.wal
 stock_platform/_temp_csv/
 stock_platform/_temp_year/
+
+# 06_download_baostock.py 的落盘分片
+stock_platform/baostock_daily/
